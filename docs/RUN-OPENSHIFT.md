@@ -189,8 +189,9 @@ data:
        openssl rand -base64 32
        ```
 
-     - **Key:** `GRAFANA_ADMIN_USERNAME` — a Grafana admin/service-account username. This account is used for provisioning API calls (creating/updating alert rules).
-     - **Key:** `GRAFANA_ADMIN_PASSWORD` — the password for the Grafana admin/service-account.
+     - **Key:** `GRAFANA_ADMIN_TOKEN` — a Grafana service-account token (starts with `glsa_`) with admin permissions. This token is used for provisioning API calls (creating/updating alert rules). Takes precedence over `GRAFANA_ADMIN_USERNAME` / `GRAFANA_ADMIN_PASSWORD` when set.
+     - **Key:** `GRAFANA_ADMIN_USERNAME` — (alternative to the token) a Grafana admin/service-account username for Basic auth.
+     - **Key:** `GRAFANA_ADMIN_PASSWORD` — (alternative to the token) the password for the Grafana admin/service-account.
 4. Click **Create**.
 
 > Do **not** commit this secret to Git.

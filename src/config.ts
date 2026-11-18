@@ -13,6 +13,9 @@ const configSchema = z.object({
   registryDataDir: z.string().default("./data"),
   grafanaAdminUsername: z.string().optional(),
   grafanaAdminPassword: z.string().optional(),
+  // Admin-level service-account token (glsa_...). When set, takes precedence
+  // over GRAFANA_ADMIN_USERNAME/PASSWORD for provisioning API calls.
+  grafanaAdminToken: z.string().optional(),
 });
 
 export const config = configSchema.parse({
@@ -26,4 +29,5 @@ export const config = configSchema.parse({
   registryDataDir: process.env.REGISTRY_DATA_DIR,
   grafanaAdminUsername: process.env.GRAFANA_ADMIN_USERNAME,
   grafanaAdminPassword: process.env.GRAFANA_ADMIN_PASSWORD,
+  grafanaAdminToken: process.env.GRAFANA_ADMIN_TOKEN,
 });

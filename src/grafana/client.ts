@@ -6,8 +6,11 @@ import { GrafanaAPIError, GrafanaAuthError, RuleNotFoundError } from "./errors.j
 
 export interface GrafanaCredential {
   baseUrl: string;
-  username: string;
-  password: string;
+  username?: string;
+  password?: string;
+  // Service-account token (glsa_...). When set, Bearer token auth is used
+  // instead of Basic auth.
+  token?: string;
 }
 
 interface RequestOptions {
@@ -17,6 +20,9 @@ interface RequestOptions {
 }
 
 export function adminGrafanaClient(baseUrl: string): GrafanaClient | undefined {
+  if (config.grafanaAdminToken) {
+    return new GrafanaClient({ baseUrl, token: config.grafanaAdminToken });
+  }
   if (!config.grafanaAdminUsername || !config.grafanaAdminPassword) {
     return undefined;
   }
@@ -43,9 +49,11 @@ export class GrafanaClient {
     options: RequestOptions = {}
   ): Promise<{ statusCode: number; body: string }> {
     const url = new URL(path, this.credentials.baseUrl.replace(/\/$/, "") + "/");
-    const auth = Buffer.from(`${this.credentials.username}:${this.credentials.password}`).toString(
-      "base64"
-    );
+    const auth = this.credentials.token
+      ? `Bearer ${this.credentials.token}`
+      : `Basic ${Buffer.from(
+          `${this.credentials.username}:${this.credentials.password}`
+        ).toString("base64")}`;
 
     const requestOptions: https.RequestOptions = {
       hostname: url.hostname,
@@ -55,7 +63,7 @@ export class GrafanaClient {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
+        Authorization: auth,
         ...(options.disableProvenance ? { "X-Disable-Provenance": "true" } : {}),
       },
       rejectUnauthorized: this.rejectUnauthorized,
