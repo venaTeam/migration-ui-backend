@@ -109,6 +109,8 @@ def app(settings: Settings, clock: FakeClock) -> FastAPI:
 def mock() -> Iterator[respx.MockRouter]:
     """Grafana and the compliance service; unmocked calls fail the test."""
     with respx.mock(assert_all_called=False) as router:
+        # The admin account works in org 1.
+        router.get(f"{GRAFANA}/api/org").respond(json={"id": 1, "name": "Main"})
         yield router
 
 

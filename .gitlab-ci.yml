@@ -1,5 +1,5 @@
-# Tests run on merge requests and branch pushes. On the default branch and on
-# tags, the image is also built and pushed to Artifactory.
+# Tests run on merge requests and branch pushes. On the default branch, on dev
+# and on tags, the image is also built and pushed to Artifactory.
 #
 # CI/CD variables to set in GitLab (Settings > CI/CD > Variables):
 #   REGISTRY_USER, REGISTRY_PASSWORD  Artifactory push credentials (masked)
@@ -10,7 +10,9 @@
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+    # A branch with an open MR runs in the MR pipeline instead, except the
+    # branches that publish images.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_COMMIT_BRANCH != "dev"
       when: never
     - if: $CI_COMMIT_BRANCH
     - if: $CI_COMMIT_TAG
@@ -54,6 +56,9 @@ image:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       variables:
         IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        IMAGE_TAG: dev-$CI_COMMIT_SHORT_SHA
   script:
     - mkdir -p /kaniko/.docker
     - AUTH=$(printf '%s:%s' "$REGISTRY_USER" "$REGISTRY_PASSWORD" | base64 | tr -d '\n')

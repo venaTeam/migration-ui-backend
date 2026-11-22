@@ -53,7 +53,7 @@ def parse_folder_uid(value: str) -> str | None:
     for pattern in (_DASHBOARDS_FOLDER, _FOLDERS):
         match = pattern.search(path)
         if match:
-            return match.group(1)
+            return match.group(1) if _UID.fullmatch(match.group(1)) else None
     return None
 
 

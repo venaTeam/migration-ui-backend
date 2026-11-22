@@ -45,11 +45,15 @@ async def login(request: Request, services: ServicesDep, session: SessionDep) ->
     org_role = None
     verified_at = services.clock()
     try:
-        user_teams, user_orgs = await asyncio.gather(
-            grafana.get_current_user_teams(), grafana.get_current_user_orgs()
+        user_teams, user_orgs, admin_org = await asyncio.gather(
+            grafana.get_current_user_teams(),
+            grafana.get_current_user_orgs(),
+            services.admin.current_org_id(),
         )
         teams = team_refs(user_teams)
-        org_role = role_in_org(user_orgs, user.get("orgId"))
+        # The role that counts is the one in the org the admin account works in,
+        # not the user's current org.
+        org_role = role_in_org(user_orgs, admin_org)
     except Exception as exc:
         # Logged in without them; the next request re-checks with the admin account.
         log.warning("[login] could not fetch user teams/org role: %s", exc)

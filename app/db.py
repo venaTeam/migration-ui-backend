@@ -61,10 +61,16 @@ class Database:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
+                conn.execute("COMMIT")
             except BaseException:
-                conn.execute("ROLLBACK")
+                # A failed COMMIT can leave the transaction open; never let it wedge
+                # the shared connection, and keep the original error.
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        log.exception("Rollback failed")
                 raise
-            conn.execute("COMMIT")
 
     def close(self) -> None:
         """Close and leave a plain rollback-journal file with no -wal beside it.

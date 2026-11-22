@@ -138,14 +138,17 @@ class SessionRechecker:
         if user is None or user.get("isDisabled"):
             return None
         user_id = user["id"]
-        orgs, teams = await asyncio.gather(
-            self._admin.get_user_orgs(user_id), self._admin.get_user_teams(user_id)
+        orgs, teams, admin_org = await asyncio.gather(
+            self._admin.get_user_orgs(user_id),
+            self._admin.get_user_teams(user_id),
+            self._admin.current_org_id(),
         )
-        return VerifiedUser(user_id, role_in_org(orgs, user.get("orgId")), team_refs(teams))
+        return VerifiedUser(user_id, role_in_org(orgs, admin_org), team_refs(teams))
 
     async def _verify_in_org(self, login: str) -> VerifiedUser | None:
         member = await self._admin.find_org_user(login)
-        if member is None:
+        # Grafana keeps disabled users in their orgs.
+        if member is None or member.get("isDisabled"):
             return None
         role = member.get("role")
         return VerifiedUser(

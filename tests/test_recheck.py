@@ -200,6 +200,19 @@ class TestOrgFallback:
         )
         assert schema_call(due) == 401
 
+    def test_a_disabled_org_member_is_logged_out(
+        self, due: TestClient, mock: respx.MockRouter
+    ) -> None:
+        mock.get(f"{GRAFANA}/api/org/users/search").respond(
+            json={
+                "totalCount": 1,
+                "orgUsers": [
+                    {"userId": USER_ID, "login": USERNAME, "role": "Editor", "isDisabled": True}
+                ],
+            }
+        )
+        assert schema_call(due) == 401
+
 
 @pytest.fixture
 def two_sessions(client: TestClient, mock: respx.MockRouter) -> tuple[str, str]:

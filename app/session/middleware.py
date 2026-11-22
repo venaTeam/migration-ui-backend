@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 from email.utils import formatdate
 from urllib.parse import quote, unquote
 
@@ -19,6 +20,8 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.session.store import SessionData, SessionStore
+
+log = logging.getLogger(__name__)
 
 COOKIE_NAME = "sessionId"
 STATE_KEY = "session"
@@ -60,7 +63,8 @@ def sign(value: str, secret: str) -> str:
 
 def unsign(signed: str, secret: str) -> str | None:
     value = signed[: signed.rfind(".")]
-    return value if hmac.compare_digest(sign(value, secret), signed) else None
+    # Bytes: compare_digest refuses str with non-ASCII characters.
+    return value if hmac.compare_digest(sign(value, secret).encode(), signed.encode()) else None
 
 
 def _cookie(header: str | None, name: str) -> str | None:
@@ -142,7 +146,11 @@ class SessionMiddleware:
             return CLEARED_COOKIE
         if context.sid is None or context.data is None:
             return None
-        self.store.touch(context.sid, context.data)
+        try:
+            self.store.touch(context.sid, context.data)
+        except Exception:
+            # The request already ran; a missed touch only shortens the idle window.
+            log.exception("Session touch failed")
         secure = is_secure(scope) if self.cookie_secure == "auto" else self.cookie_secure == "true"
         return session_cookie(
             context.sid, self.secret, self.store.cookie_expires_at(context.data), secure

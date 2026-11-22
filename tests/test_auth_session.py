@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import closing
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -91,8 +93,23 @@ class TestLogin:
         login(client)
         expected = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
         paths = {call.request.url.path: call.request for call in mock.calls}
-        assert set(paths) == {"/api/user", "/api/user/teams", "/api/user/orgs"}
-        assert all(r.headers["Authorization"] == f"Basic {expected}" for r in paths.values())
+        # /api/org is the admin account finding its own org.
+        user_paths = {p: r for p, r in paths.items() if p != "/api/org"}
+        assert set(user_paths) == {"/api/user", "/api/user/teams", "/api/user/orgs"}
+        assert all(r.headers["Authorization"] == f"Basic {expected}" for r in user_paths.values())
+
+    def test_role_comes_from_the_admin_accounts_org(
+        self,
+        settings: Settings,
+        store: SqliteSessionStore,
+        client: TestClient,
+        mock: respx.MockRouter,
+    ) -> None:
+        # Viewer in org 1 (the admin account's org), Admin in org 2 (the current org).
+        mock_login(mock, role="Viewer")
+        mock.get(f"{GRAFANA}/api/user").respond(json={"id": USER_ID, "login": USERNAME, "orgId": 2})
+        login(client)
+        assert session_of(settings, store, client).org_role == "Viewer"
 
     def test_keeps_who_the_user_is_and_never_the_password(
         self,
@@ -104,7 +121,6 @@ class TestLogin:
         mock_login(mock, role="Editor")
         login(client)
         session = session_of(settings, store, client)
-        # The role comes from the org /api/user names, not from any other org.
         assert (session.login, session.user_id, session.org_role) == (USERNAME, USER_ID, "Editor")
         assert session.teams == [{"id": 7, "name": "ops"}]
         raw = sessions_file(settings).read_bytes()
@@ -350,3 +366,44 @@ class TestCookieSigning:
     def test_matches_express_session_format(self) -> None:
         # cookie-signature: base64 HMAC-SHA256 without padding.
         assert sign("abc", "secret") == "abc.mUba1OAOkT/Ivo5dP34RCkqegy+D+wnDRShdeGONig4"
+
+
+class TestRobustness:
+    def test_a_non_ascii_cookie_is_ignored_not_a_500(
+        self, client: TestClient, mock: respx.MockRouter
+    ) -> None:
+        mock_login(mock)
+        client.cookies.set(COOKIE_NAME, "s%3A%C3%A9.abc", domain="testserver.local")
+        assert client.get("/api/health").status_code == 200
+        assert login(client).status_code == 200
+
+    def test_a_chunked_body_over_the_limit_is_refused(self, client: TestClient) -> None:
+        def chunks() -> Iterator[bytes]:
+            yield b'{"grafana_username": "'
+            for _ in range(200):
+                yield b"x" * 1024
+            yield b'"}'
+
+        response = client.post(
+            "/api/auth/login", content=chunks(), headers={"Content-Type": "application/json"}
+        )
+        assert response.status_code == 413
+
+    def test_a_json_body_with_a_byte_order_mark_is_read(
+        self, client: TestClient, mock: respx.MockRouter
+    ) -> None:
+        mock_login(mock)
+        body = "\ufeff" + json.dumps({"grafana_username": USERNAME, "grafana_password": PASSWORD})
+        response = client.post(
+            "/api/auth/login",
+            content=body.encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+
+    def test_start_and_stop_leave_no_registry_wal(self, settings: Settings, app: FastAPI) -> None:
+        with TestClient(app):
+            pass
+        data_dir = Path(settings.registry_data_dir)
+        assert (data_dir / "migrations.db").exists()
+        assert not (data_dir / "migrations.db-wal").exists()

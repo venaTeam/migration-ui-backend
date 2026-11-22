@@ -146,3 +146,36 @@ class TestLoadList:
         mock.get(f"{RULES}/a").respond(500, text="boom")
         response = logged_in.post("/api/rules/load-list", json={"rule_urls": [url("a")]})
         assert response.status_code == 502
+
+    def test_a_failed_copy_check_lists_the_rule_instead_of_failing(
+        self, logged_in: TestClient, mock: respx.MockRouter, registry: Registry
+    ) -> None:
+        mock_schema(mock)
+        mock_permissions(mock, [{"teamId": 7, "permission": 1}])
+        mock.get(f"{RULES}/a").respond(json=grafana_rule("a", "A"))
+        mock.get(f"{RULES}/b").respond(json=grafana_rule("b", "B"))
+        mock.get(f"{RULES}/a-v2").respond(500, text="boom")
+        registry.record_migration(
+            original_uid="a",
+            original_title="a",
+            created_uid="a-v2",
+            created_title="a-v2",
+            folder_uid="f1",
+            deleted_original=False,
+            created_via="clone",
+            migrated_by=USERNAME,
+        )
+        response = logged_in.post("/api/rules/load-list", json={"rule_urls": [url("a"), url("b")]})
+        assert response.status_code == 200
+        assert [rule["uid"] for rule in response.json()["rules"]] == ["a", "b"]
+
+    def test_two_spellings_of_one_rule_list_it_once(
+        self, logged_in: TestClient, mock: respx.MockRouter
+    ) -> None:
+        mock_schema(mock)
+        mock_permissions(mock, [{"teamId": 7, "permission": 1}])
+        mock.get(f"{RULES}/a").respond(json=grafana_rule("a", "A"))
+        edit = f"{GRAFANA}/alerting/grafana/a/edit"
+        response = logged_in.post("/api/rules/load-list", json={"rule_urls": [url("a"), edit]})
+        assert [rule["uid"] for rule in response.json()["rules"]] == ["a"]
+        assert response.json()["skipped"] == []

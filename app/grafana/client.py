@@ -39,6 +39,7 @@ class GrafanaClient:
     ) -> None:
         self._http = http
         self._base_url = base_url
+        self._org_id: int | None = None
         self._username = username
         self._password = password
         self._token = token
@@ -154,6 +155,13 @@ class GrafanaClient:
 
     async def get_current_user_teams(self) -> list[dict[str, Any]]:
         return await self._get("/api/user/teams", "fetch user teams")  # type: ignore[no-any-return]
+
+    async def current_org_id(self) -> int:
+        """The org these credentials work in (cached): where folders and rules are read."""
+        if self._org_id is None:
+            org = await self._get("/api/org", "fetch current org")
+            self._org_id = int(org["id"])
+        return self._org_id
 
     # Other users (admin account, for the session re-check)
 

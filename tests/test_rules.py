@@ -583,6 +583,7 @@ class TestAdminVariants:
         mock.get(f"{grafana}/api/user").respond(json={"id": 1, "login": USERNAME, "orgId": 1})
         mock.get(f"{grafana}/api/user/teams").respond(json=[{"id": 7, "name": "ops"}])
         mock.get(f"{grafana}/api/user/orgs").respond(json=[{"orgId": 1, "role": "Viewer"}])
+        mock.get(f"{grafana}/api/org").respond(json={"id": 1})
         mock.get(f"{grafana}/api/v1/provisioning/alert-rules/o1").respond(
             json=grafana_rule("o1", "X")
         )

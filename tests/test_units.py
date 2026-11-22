@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 from app.config import Settings
+from app.db import Database
+from app.session.store import SESSIONS_SCHEMA_SQL, SqliteSessionStore
 from app.standard import classify_rule_against_schema
 from app.urls import parse_folder_uid, parse_rule_uid, rule_view_url
 from tests.conftest import COMPLIANT_ANNOTATIONS, COMPLIANT_LABELS, SCHEMA
@@ -109,3 +114,34 @@ class TestClassification:
     def test_send_alert_is_case_insensitive_and_component_falls_back_to_object(self) -> None:
         labels = {"Send-Alert": "True", "Appchi - ops": "true", "object": "db"}
         assert classify_rule_against_schema(SCHEMA, labels, COMPLIANT_ANNOTATIONS) == []
+
+
+@pytest.mark.parametrize(
+    "value", ["https://g/dashboards/f/..", "https://g/folders/.", "https://g/dashboards/f/a.b"]
+)
+def test_folder_uids_from_urls_are_validated(value: str) -> None:
+    assert parse_folder_uid(value) is None
+
+
+def test_touch_interval_never_exceeds_half_the_ttl(tmp_path: Path) -> None:
+    db = Database(tmp_path / "s.db", SESSIONS_SCHEMA_SQL)
+    store = SqliteSessionStore(
+        db, ttl_seconds=120, max_ttl_seconds=3600, touch_interval_seconds=300
+    )
+    assert store._touch_interval == 60
+
+
+def test_a_failed_commit_does_not_wedge_later_transactions(tmp_path: Path) -> None:
+    db = Database(
+        tmp_path / "t.db",
+        "CREATE TABLE IF NOT EXISTS p (id INTEGER PRIMARY KEY);"
+        "CREATE TABLE IF NOT EXISTS c (pid INTEGER REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED);",
+    )
+    with db.connection() as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+    # A deferred foreign-key violation fails COMMIT and SQLite keeps the transaction open.
+    with pytest.raises(sqlite3.IntegrityError), db.transaction() as conn:
+        conn.execute("INSERT INTO c VALUES (99)")
+    with db.transaction() as conn:
+        conn.execute("INSERT INTO p VALUES (1)")
+    db.close()

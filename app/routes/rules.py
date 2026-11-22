@@ -177,9 +177,13 @@ async def load_rule_list(
     except Exception as exc:
         log.error("[load-list] error: %s", exc)
         return grafana_error(exc, "Rule list load failed")
+    rules: dict[str, dict[str, Any]] = {}
+    for is_rule, entry in entries:
+        if is_rule:
+            rules.setdefault(entry["uid"], entry)
     return JSONResponse(
         {
-            "rules": [entry for is_rule, entry in entries if is_rule],
+            "rules": list(rules.values()),
             "skipped": [entry for is_rule, entry in entries if not is_rule],
         }
     )
@@ -211,12 +215,17 @@ async def _list_entry(
     ):
         return skipped("already_v2", "Already on the v2 standard.")
     previous = services.registry.latest_migration_for_original(uid)
-    if (
-        previous is not None
-        and previous.created_uid
-        and await _copy_exists(services.admin, previous.created_uid)
-    ):
-        return skipped("migrated", "Already migrated by this tool.")
+    if previous is not None and previous.created_uid:
+        try:
+            copy_exists = await _copy_exists(services.admin, previous.created_uid)
+        except Exception as exc:
+            # As in /load: list the rule; the clone's own check still blocks a duplicate.
+            log.warning(
+                "[load-list] copy-exists check for %s failed: %s", previous.created_uid, exc
+            )
+            copy_exists = False
+        if copy_exists:
+            return skipped("migrated", "Already migrated by this tool.")
     return True, {
         "uid": uid,
         "title": rule.get("title") or UNTITLED_RULE,

@@ -65,7 +65,8 @@ def create_app(
     logging.getLogger("app").setLevel(_LOG_LEVELS[settings.log_level])
 
     data_dir = Path(settings.registry_data_dir)
-    registry = Registry(Database(data_dir / REGISTRY_FILE_NAME, REGISTRY_SCHEMA_SQL))
+    registry_db = Database(data_dir / REGISTRY_FILE_NAME, REGISTRY_SCHEMA_SQL)
+    registry = Registry(registry_db)
     # A file of its own, so the registry file stays readable by the Express service.
     sessions_db = Database(data_dir / SESSIONS_FILE_NAME, SESSIONS_SCHEMA_SQL)
     sessions = SqliteSessionStore(
@@ -118,6 +119,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Open the registry now so a clean stop always checkpoints a leftover -wal.
+        with registry_db.connection():
+            pass
         log.info("UI backend listening on port %s", settings.port)
         log.info("Compliance service: %s", settings.compliance_service_url)
         removed = sessions.delete_expired()

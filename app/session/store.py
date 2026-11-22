@@ -98,7 +98,8 @@ class SqliteSessionStore:
         self._db = db
         self._ttl = ttl_seconds
         self._max_ttl = max_ttl_seconds
-        self._touch_interval = touch_interval_seconds
+        # Never touch less often than half the idle TTL, or active users would expire.
+        self._touch_interval = min(touch_interval_seconds, ttl_seconds / 2)
         self._clock = clock
 
     def _expired(self, data: SessionData, now: float) -> bool:

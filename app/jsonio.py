@@ -53,12 +53,20 @@ async def read_json_body(request: Request) -> Any:
     length = headers.get("content-length", "").strip()
     if length.isdigit() and int(length) > JSON_BODY_LIMIT_BYTES:
         raise BodyError(413, "Payload Too Large")
-    raw = await request.body()
-    if len(raw) > JSON_BODY_LIMIT_BYTES:
-        raise BodyError(413, "Payload Too Large")
+    # Read as it streams: a chunked body has no Content-Length to check up front.
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > JSON_BODY_LIMIT_BYTES:
+            raise BodyError(413, "Payload Too Large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     if not raw:
         return {}
     text = raw.decode(charset, errors="replace")
+    # express.json() accepts a leading byte-order mark.
+    text = text.removeprefix("\ufeff")
     # Strict mode: only objects and arrays.
     if text.lstrip(_JSON_WHITESPACE)[:1] not in ("{", "["):
         raise BodyError(400, "Bad Request")
