@@ -1,0 +1,14 @@
+# Production runtime dependencies for the UI backend.
+# Install with: pip install -r requirements.txt
+
+fastapi==0.141.1
+httpx==0.28.1
+pydantic==2.13.4
+python-dotenv==1.2.4
+uvicorn==0.52.1
+
+# Development / test / lint dependencies
+pytest==8.4.2
+respx==0.22.0
+ruff==0.15.14
+mypy==2.3.0

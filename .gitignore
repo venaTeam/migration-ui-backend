@@ -2,6 +2,15 @@
 node_modules/
 .npm
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
 # Build output
 dist/
 *.tsbuildinfo
@@ -14,6 +23,8 @@ dist/
 # Local SQLite databases (runtime state, never commit)
 data/*.db
 *.db
+*.db-wal
+*.db-shm
 
 # Logs
 logs
