@@ -5,7 +5,7 @@ This guide explains how to deploy the **AlertsOnStandard** stack using only the 
 The stack consists of three services:
 
 1. **compliance** — Python 3.11+ + FastAPI service that evaluates Grafana alert rules.
-2. **ui-backend** — Node.js 20 + Express API backend.
+2. **ui-backend** — Python 3.12 + FastAPI API backend. It replaced a Node.js/Express service with the same API; see [10. ui-backend: the Python service](#10-ui-backend-the-python-service).
 3. **ui-frontend** — React 18 + Vite SPA served by nginx.
 
 > This project is designed for an **on-prem/air-gapped** environment. All images must be built from a registry that OpenShift can reach.
@@ -25,6 +25,7 @@ The stack consists of three services:
 - [7. Security notes](#7-security-notes)
 - [8. Grafana self-signed certificates](#8-grafana-self-signed-certificates)
 - [9. Updating the application](#9-updating-the-application)
+- [10. ui-backend: the Python service](#10-ui-backend-the-python-service)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -59,7 +60,7 @@ The stack consists of three services:
 │  └──────┬──────┘                   └───────────┘ │
 │         │ /api proxy                             │
 │         ▼                                        │
-│  ┌─────────────┐  (Node/Express)                 │
+│  ┌─────────────┐  (Python/FastAPI)               │
 │  │ ui-backend  │                                 │
 │  │   :3000     │                                 │
 │  └──────┬──────┘                                 │
@@ -110,7 +111,10 @@ You have two options. Choose the one that fits your environment.
      --build-arg POETRY_HTTP_BASIC_PYPI_PASSWORD="$POETRY_HTTP_BASIC_PYPI_PASSWORD" \
      -t $REGISTRY/compliance:$TAG ./migration-compliance
 
-   podman build -t $REGISTRY/ui-backend:$TAG ./migration-ui-backend
+   # PIP_INDEX_URL is optional: a PyPI mirror when pypi.org is not reachable
+   podman build \
+     --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+     -t $REGISTRY/ui-backend:$TAG ./migration-ui-backend
    podman build -t $REGISTRY/ui-frontend:$TAG ./migration-frontend
 
    podman push $REGISTRY/compliance:$TAG
@@ -163,7 +167,9 @@ data:
   COMPLIANCE_SERVICE_URL: "http://compliance:8000"
   GRAFANA_URL: "https://your-grafana-instance.d8200.mil"
   CORS_ORIGIN: "https://vena-vena.apps.ocp4-prep.d8200.mil"
-  SESSION_TTL_MINUTES: "30"
+  SESSION_TTL_MINUTES: "10080"
+  SESSION_MAX_TTL_DAYS: "30"
+  SESSION_COOKIE_SECURE: "auto"
   LOG_LEVEL: "info"
   REGISTRY_DATA_DIR: "/data"
   COMPLIANCE_PORT: "8000"
@@ -172,7 +178,7 @@ data:
   GRAFANA_INSECURE_TLS: "false"
 ```
 
-4. Replace `https://vena.apps.d8200.mil` with your actual public Route URL.
+4. Replace `https://vena.apps.d8200.mil` with your actual public Route URL. `CORS_ORIGIN` may list several origins, separated by commas.
 5. Replace `https://your-grafana-instance.d8200.mil` with your Grafana URL.
 6. Click **Create**.
 
@@ -189,9 +195,10 @@ data:
        openssl rand -base64 32
        ```
 
-     - **Key:** `GRAFANA_ADMIN_TOKEN` — a Grafana service-account token (starts with `glsa_`) with admin permissions. This token is used for provisioning API calls (creating/updating alert rules). Takes precedence over `GRAFANA_ADMIN_USERNAME` / `GRAFANA_ADMIN_PASSWORD` when set.
-     - **Key:** `GRAFANA_ADMIN_USERNAME` — (alternative to the token) a Grafana admin/service-account username for Basic auth.
-     - **Key:** `GRAFANA_ADMIN_PASSWORD` — (alternative to the token) the password for the Grafana admin/service-account.
+     - **Key:** `GRAFANA_ADMIN_TOKEN` — **required** (or the username/password pair below): a Grafana service-account token (starts with `glsa_`) with the org **Admin** role. After login, every Grafana and compliance-service call of the ui-backend uses this account, after the ui-backend's own folder-permission check. Takes precedence over `GRAFANA_ADMIN_USERNAME` / `GRAFANA_ADMIN_PASSWORD` when set. The ui-backend refuses to start without admin credentials.
+     - **Key:** `GRAFANA_ADMIN_USERNAME` — (alternative to the token) a Grafana admin username for Basic auth.
+     - **Key:** `GRAFANA_ADMIN_PASSWORD` — (alternative to the token) that admin's password.
+     - **Key:** `MIGRATION_STATUS_TOKEN` — a random string (`openssl rand -base64 32`) that alerts-bi sends to read the migrated status of its alerts. Put the **same value** in alerts-bi's Secret. Without it, `POST /api/rules/migration-status` answers 404.
 4. Click **Create**.
 
 > Do **not** commit this secret to Git.
@@ -274,10 +281,13 @@ spec:
   ports:
     - port: 8000
       targetPort: 8000
-[end of code block]
-[heading] ui-backend
-[paragraph] The migrations registry (a SQLite file written to `REGISTRY_DATA_DIR`) must survive pod restarts — attach a PVC (PLAN-v1-migrated-flag.md §4.2).
-[start of code block]
+```
+
+### ui-backend
+
+The migrations registry (a SQLite file written to `REGISTRY_DATA_DIR`) must survive pod restarts — attach a PVC (PLAN-v1-migrated-flag.md §4.2). Keep **one replica** and the **`Recreate`** strategy: two processes must never use the registry file at the same time (see [10. ui-backend: the Python service](#10-ui-backend-the-python-service)).
+
+```yaml
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -298,7 +308,13 @@ metadata:
   labels:
     app: ui-backend
 spec:
+  # One replica, one process: only one process may use the SQLite files on the
+  # PVC (registry and sessions).
   replicas: 1
+  # Recreate stops the old pod before the new one starts, so an image change
+  # never runs two processes against the registry file.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ui-backend
@@ -365,9 +381,11 @@ spec:
   ports:
     - port: 3000
       targetPort: 3000
-[end of code block]
-[heading] ui-frontend
-[start of code block]
+```
+
+### ui-frontend
+
+```yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -475,8 +493,12 @@ OpenShift will generate the URL. You can find it in **Networking > Routes** unde
 - The Deployments set `runAsNonRoot: true`. OpenShift assigns a random non-root UID automatically — except ui-backend, which is pinned to `runAsUser: 1001` / `fsGroup: 1001` so the non-root process can write the registry PVC (the image also pins `USER 1001`).
 - The frontend image uses an internal unprivileged nginx base image (`8200artifactory.d8200.mil/docker-virtual/nginx:1.10.0`) and listens on port **8080**, so it does not require the `anyuid` SCC.
 - The UI backend and compliance images run as non-root because their files are world-readable and they do not write to protected paths.
-- Session cookies are marked `secure` in production, so the Route must use HTTPS.
-- Store `SESSION_SECRET` only in the Secret. Rotate it regularly.
+- The ui-backend marks the session cookie `Secure` only when the request reached it over HTTPS, as reported by the first `X-Forwarded-Proto` value. The frontend's nginx sets that header to its own `$scheme`, which is `http` behind an edge-terminated Route, so today the cookie goes out without `Secure`. The fix belongs in `migration-frontend/nginx.conf.template` (pass on the Route's `X-Forwarded-Proto`). The Route must use HTTPS either way.
+- Store `SESSION_SECRET` only in the Secret. Rotate it regularly; rotating it logs everyone out.
+- The ui-backend never stores a password. At login Grafana checks it (and LDAP behind Grafana); the session keeps only the login, user id, org role and teams, and the session table stores a SHA-256 of the session id, not the id.
+- After login, all Grafana and compliance-service calls use the admin account. Before each one the ui-backend checks the user's own folder permissions (View to read, Edit to change), so users see and change only what Grafana would let them. Org admins pass every folder check, as in Grafana.
+- Backtests run their query through Grafana with the admin account, so any logged-in user can query whatever datasources that account can read.
+- Requests that change something (POST, PUT, DELETE) are refused with 403 when their `Origin` header is neither in `CORS_ORIGIN` nor the ui-backend's own host. `POST /api/rules/migration-status` is exempt; it is protected by `MIGRATION_STATUS_TOKEN`.
 
 ---
 
@@ -508,6 +530,99 @@ After code changes:
 4. Click **Actions > Edit Deployment**.
 5. Change the image tag in the container spec, for example from `migration-ui-backend:1.0.2` to `migration-ui-backend:1.0.3`.
 6. Click **Save**. OpenShift will roll out the new version.
+
+---
+
+## 10. ui-backend: the Python service
+
+The ui-backend is a Python 3.12 + FastAPI service (`app/` in `migration-ui-backend`). It keeps the `/api` routes and responses of the Express service it replaced and adds `POST /api/rules/load-list` (several rules at once) and `POST /api/rules/migration-status` (for alerts-bi). The Express sources (`src/`) stay in the repository until the cutover is complete.
+
+### Environment variables
+
+A `.env` file in the working directory is read too, as before; real environment variables win.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `UI_BACKEND_PORT` | `3000` | Port the service listens on. |
+| `COMPLIANCE_SERVICE_URL` | `http://localhost:8000` | Must be a URL. |
+| `GRAFANA_URL` | `http://localhost:3000` | Must be a URL. |
+| `SESSION_SECRET` | `change-me-in-production` | At least 16 characters. Signs the session cookie. |
+| `SESSION_TTL_MINUTES` | `10080` (7 days) | Idle timeout. Use restarts it. |
+| `SESSION_MAX_TTL_DAYS` | `30` | Absolute cap from login, however active the session is. |
+| `SESSION_TOUCH_INTERVAL_SECONDS` | `300` | A session's "last used" time is written at most this often. |
+| `SESSION_RECHECK_HOURS` | `24` | How often each session's user is re-checked with the admin account. |
+| `SESSION_COOKIE_SECURE` | `auto` | `auto` (Secure when `X-Forwarded-Proto` says https), `true` or `false`. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `CORS_ORIGIN` | `http://localhost:5173` | Origins allowed to call the API with credentials; one, or a comma-separated list. |
+| `REGISTRY_DATA_DIR` | `./data` | Holds `migrations.db` and `sessions.db`. On OpenShift: `/data`, the PVC. |
+| `GRAFANA_ADMIN_TOKEN` | — | **Required** unless the username/password pair is set. Service-account token; wins over the pair. |
+| `GRAFANA_ADMIN_USERNAME`, `GRAFANA_ADMIN_PASSWORD` | — | Basic-auth alternative to the token. |
+| `GRAFANA_INSECURE_TLS` | `false` | Exactly `true` turns off TLS verification for Grafana calls. |
+| `MIGRATION_STATUS_TOKEN` | — | Bearer token alerts-bi sends to `/api/rules/migration-status`. Unset: the route answers 404. |
+
+The service refuses to start when a value is invalid (for example a `SESSION_SECRET` shorter than 16 characters) or when no admin credentials are set.
+
+### One replica, one process, `Recreate`
+
+- The image runs `python -m app`: uvicorn with **one worker** on `UI_BACKEND_PORT`, as user 1001.
+- Sessions are in `sessions.db` on the PVC, so they survive restarts. Some state is per process: the re-check retry times and an hourly cache of team members.
+- Keep `replicas: 1` and `strategy: Recreate` (section 4). With `RollingUpdate`, the new pod starts while the old one still runs, and both would use the SQLite files.
+
+### Sessions
+
+- `sessions.db` sits next to `migrations.db` on the same PVC. It is a separate file so that `migrations.db` stays readable by the Express service for a rollback.
+- A session lasts while it is used at least once per `SESSION_TTL_MINUTES` (7 days), and never longer than `SESSION_MAX_TTL_DAYS` (30 days) after login. Expired rows are deleted at startup and every hour; logout deletes the row at once.
+- **Daily re-check:** the password is only checked at login, so once a day (`SESSION_RECHECK_HOURS`) the ui-backend looks the user up again with the admin account, on their next request. A user Grafana no longer has (or has disabled) is logged out; everyone else gets their org role and teams refreshed.
+  - With a Grafana **server admin** account it uses `/api/users/lookup` and `/api/users/{id}/orgs|teams`.
+  - Otherwise (403) it uses the org endpoints: `/api/org/users/search` for the user and their role, and `/api/teams/search` plus `/api/teams/{id}/members` for teams, cached for an hour. The org Admin role is enough for these.
+  - If Grafana is down or answers with an error, the session is kept and the check is retried about 5 minutes later. Nobody is logged out by an outage.
+- **People who leave:** the re-check sees what Grafana knows. A user removed from LDAP is not detected while their Grafana user record still exists; open-source Grafana updates that record only when the user logs in through LDAP again. The 30-day cap bounds how long such a session can last; removing or disabling the user in Grafana ends it at the next re-check.
+
+### Migration status for alerts-bi
+
+`POST /api/rules/migration-status` with `Authorization: Bearer <MIGRATION_STATUS_TOKEN>` and `{"rule_uids": [...]}` (1 to 100) answers `{"migrated": [...]}`: the rules whose latest migration has a v2 copy that still exists. It needs no session and makes at most one Grafana call (a listing of all rules), since alerts-bi waits only about a second.
+
+### The registry file
+
+The Python service opens the same `migrations.db` with the same tables. No data migration is needed.
+
+- While it runs, the file is in SQLite's WAL mode: a `migrations.db-wal` and a `migrations.db-shm` file sit next to it on the PVC.
+- On a clean stop (SIGTERM, which Kubernetes sends first), the service folds the WAL back into `migrations.db`, deletes the extra files and leaves the plain format the Express service reads.
+- **Never run the Express and the Python service against the file at the same time.** The Express service (sql.js) keeps the whole database in memory and rewrites the file on every write, so it would wipe rows the other process wrote. A `ReadWriteOnce` PVC does not prevent this when both pods land on the same node; `Recreate` does.
+
+### Cutover from Express
+
+1. Build and push the image from `migration-ui-backend` (section 2). The repository's `Dockerfile` now builds the Python service.
+2. Make sure the ui-backend Deployment has `strategy: Recreate` (section 4).
+3. Add `MIGRATION_STATUS_TOKEN` to `vena-secrets` and check the admin credentials are there: the Python service does not start without them.
+4. Change the image tag to the new one and save. OpenShift stops the Express pod, then starts the Python pod.
+5. **Everyone is logged out once:** the Express sessions were in memory. From then on sessions survive restarts and deploys. Migrated flags and the seeder's history carry over from the file.
+
+### Rollback to Express
+
+The file stays compatible in both directions, so rolling back means redeploying the Express image:
+
+1. Scale the ui-backend Deployment to **0** and wait until its pod is gone. The clean stop folds the WAL into `migrations.db`.
+2. If the last Python pod did **not** stop cleanly (OOMKilled, or killed after `terminationGracePeriodSeconds`), a `migrations.db-wal` file may remain. Do not start Express on it: sql.js ignores that file, so its last writes would be lost, and the next Python start would replay the stale WAL over Express's writes. Instead, set the Python image again, scale to 1, wait until the pod is Ready, then scale back to 0. That clean stop removes the WAL.
+3. Change the image back to the Express tag (for example `migration-ui-backend:1.0.3`) and scale to 1.
+4. Users log in again. Rows the Python service recorded are kept. Express ignores `sessions.db`; it can stay on the PVC.
+
+### Running it locally
+
+```bash
+cd migration-ui-backend
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# The CI checks
+.venv/bin/ruff check app tests
+.venv/bin/mypy app tests
+.venv/bin/pytest -q
+
+# Serve on UI_BACKEND_PORT (default 3000); point it at Grafana and the compliance service
+GRAFANA_URL=https://grafana.example COMPLIANCE_SERVICE_URL=http://localhost:8000 \
+  .venv/bin/python -m app
+```
 
 ---
 
